@@ -1,0 +1,18 @@
+condomob:
+  login_url: "https://www.condomob.net/restritoCondomino/login.do"
+  username: "SEU_CPF_OU_EMAIL"
+  password: "SUA_SENHA"
+
+booking:
+  area_name: "Quadra de Tênis"   # nome exato como aparece em "Reservar"
+  weekdays: ["TUE", "THU"]       # dias-alvo do jogo
+  start_time: "19:00"            # horário do slot
+  duration_minutes: 60
+  open_days_before: 3            # janela abre N dias antes, à meia-noite
+  timezone: "America/Sao_Paulo"
+
+runtime:
+  headless: true
+  prearm_seconds: 30   # quanto antes da meia-noite logar e abrir a tela
+  retry_attempts: 5
+  retry_delay_ms: 200
