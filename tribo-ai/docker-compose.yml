@@ -1,0 +1,25 @@
+# Docker Compose — Desenvolvimento local do Tribo.ai
+# Sobe apenas o Postgres; o Next.js roda via `npm run dev` fora do container
+# para ter hot-reload rápido.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tribo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tribo
+      POSTGRES_PASSWORD: tribo_dev
+      POSTGRES_DB: tribo_ai
+    ports:
+      - "5433:5432"  # 5433 pra não conflitar com Postgres local
+    volumes:
+      - tribo-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tribo -d tribo_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  tribo-db:

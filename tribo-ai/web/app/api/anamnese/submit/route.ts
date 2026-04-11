@@ -2,21 +2,24 @@
  * POST /api/anamnese/submit
  *
  * Recebe as respostas da anamnese, valida, deriva o TenantConfig
- * e persiste no banco. No MVP assume que o usuário já está autenticado
- * e tem tenantId no session.
+ * e persiste no banco.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { AnamneseAnswersSchema, deriveConfig } from "@/lib/tenant-config";
-// import { prisma } from "@/lib/db";
-// import { auth } from "@/lib/auth";
+import { prisma } from "@/lib/db";
+import { requireSession } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
-  // Auth guard — descomentar em produção
-  // const session = await auth();
-  // if (!session?.user?.tenantId) {
-  //   return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  // }
+  let session;
+  try {
+    session = await requireSession();
+  } catch (err) {
+    return NextResponse.json(
+      { error: "unauthorized", message: err instanceof Error ? err.message : "unauth" },
+      { status: 401 },
+    );
+  }
 
   const body = await req.json();
   const parsed = AnamneseAnswersSchema.safeParse(body);
@@ -29,18 +32,29 @@ export async function POST(req: NextRequest) {
 
   const config = deriveConfig(parsed.data);
 
-  // TODO: persistir no banco
-  // await prisma.tenant.update({
-  //   where: { id: session.user.tenantId },
-  //   data: { config, status: "ACTIVE" },
-  // });
+  await prisma.tenant.update({
+    where: { id: session.tenant.id },
+    data: {
+      config: config as object,
+      status: "ACTIVE",
+      planTier: config.derived.planTier,
+    },
+  });
 
-  // TODO: disparar webhook para crew de onboarding
-  // await triggerOnboardingCrew(session.user.tenantId, config);
+  await prisma.auditLog.create({
+    data: {
+      tenantId: session.tenant.id,
+      actorId: session.user.id,
+      action: "update",
+      entity: "Tenant",
+      entityId: session.tenant.id,
+      metadata: { action: "anamnese_submitted", planTier: config.derived.planTier },
+    },
+  });
 
   return NextResponse.json({
     ok: true,
     config,
-    next: "/onboarding/branding",
+    next: "/feed",
   });
 }
