@@ -2,7 +2,10 @@
  * POST /api/chat/stream
  *
  * Streaming do Assistente de RH via SSE.
- * Injeta contexto do tenant no system prompt.
+ * Usa prompt caching da Anthropic para reduzir custo em ~90% nas
+ * chamadas subsequentes (system prompt grande + repetitivo = cache ideal).
+ *
+ * Ver: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
  */
 
 import { NextRequest } from "next/server";
@@ -19,28 +22,28 @@ export async function POST(req: NextRequest) {
   try {
     session = await requireSession();
   } catch {
-    return new Response(
-      JSON.stringify({ error: "unauthorized" }),
-      { status: 401, headers: { "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ error: "unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   const { message } = await req.json();
   if (!message || typeof message !== "string") {
-    return new Response(
-      JSON.stringify({ error: "missing_message" }),
-      { status: 400, headers: { "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ error: "missing_message" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   const tenant = await prisma.tenant.findUnique({
     where: { id: session.tenant.id },
   });
   if (!tenant) {
-    return new Response(
-      JSON.stringify({ error: "tenant_not_found" }),
-      { status: 404, headers: { "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ error: "tenant_not_found" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   const config = tenant.config as unknown as TenantConfig;
@@ -50,18 +53,33 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       try {
+        // Prompt caching: marcamos o system prompt com cache_control: ephemeral
+        // para que a Anthropic cacheie e cobre 10% (em vez de 100%) nas próximas
+        // chamadas dentro de 5 minutos. Para o chatbot de RH isso é perfeito —
+        // o system prompt é grande e idêntico entre usuários do mesmo tenant.
         const response = claude.messages.stream({
           model: MODELS.SONNET,
-          max_tokens: 800, // limitado pra controlar custo
+          max_tokens: 800,
           temperature: 0.3,
-          system: systemPrompt,
+          system: [
+            {
+              type: "text",
+              text: systemPrompt,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
           messages: [{ role: "user", content: message }],
         });
 
         for await (const event of response) {
-          if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          if (
+            event.type === "content_block_delta" &&
+            event.delta.type === "text_delta"
+          ) {
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ text: event.delta.text })}\n\n`),
+              encoder.encode(
+                `data: ${JSON.stringify({ text: event.delta.text })}\n\n`,
+              ),
             );
           }
         }
@@ -71,6 +89,14 @@ export async function POST(req: NextRequest) {
           MODELS.SONNET,
           final.usage.input_tokens,
           final.usage.output_tokens,
+          {
+            cacheCreationTokens:
+              (final.usage as { cache_creation_input_tokens?: number })
+                .cache_creation_input_tokens ?? 0,
+            cacheReadTokens:
+              (final.usage as { cache_read_input_tokens?: number })
+                .cache_read_input_tokens ?? 0,
+          },
         );
 
         controller.enqueue(

@@ -201,6 +201,78 @@ async function main() {
 
   console.log(`✓ Ausência de hoje criada`);
 
+  // Pesquisa ativa (eNPS) + respostas pra o admin dashboard mostrar dados
+  const enpsSurvey = await prisma.survey.create({
+    data: {
+      tenantId: tenant.id,
+      title: "eNPS — Você nos recomendaria?",
+      description:
+        "Pesquisa curta que mede a chance de você recomendar a empresa como um bom lugar para trabalhar.",
+      templateId: "enps_basic",
+      questions: [
+        {
+          id: "score",
+          type: "scale",
+          text: "Em uma escala de 0 a 10, quanto você recomendaria nossa empresa como um bom lugar para trabalhar?",
+          required: true,
+        },
+        {
+          id: "reason",
+          type: "text",
+          text: "Qual o principal motivo da sua nota?",
+          required: false,
+        },
+      ],
+      status: "ACTIVE",
+      startsAt: new Date(),
+      endsAt: (() => {
+        const d = new Date();
+        d.setDate(d.getDate() + 7);
+        return d;
+      })(),
+      anonymous: true,
+    },
+  });
+
+  await prisma.surveyResponse.createMany({
+    data: [
+      {
+        tenantId: tenant.id,
+        surveyId: enpsSurvey.id,
+        userId: null,
+        answers: [
+          { questionId: "score", value: 9 },
+          { questionId: "reason", value: "Cultura boa, equipe colaborativa, ótimo lugar." },
+        ],
+        sentiment: 0.7,
+        sentimentLabel: "positive",
+      },
+      {
+        tenantId: tenant.id,
+        surveyId: enpsSurvey.id,
+        userId: null,
+        answers: [
+          { questionId: "score", value: 10 },
+          { questionId: "reason", value: "Adoro o que faço aqui!" },
+        ],
+        sentiment: 0.8,
+        sentimentLabel: "positive",
+      },
+      {
+        tenantId: tenant.id,
+        surveyId: enpsSurvey.id,
+        userId: null,
+        answers: [
+          { questionId: "score", value: 7 },
+          { questionId: "reason", value: "Poderia ter mais oportunidades de crescimento." },
+        ],
+        sentiment: 0,
+        sentimentLabel: "neutral",
+      },
+    ],
+  });
+  console.log(`✓ Pesquisa eNPS + 3 respostas criadas`);
+
   console.log("\n🎉 Seed completo!");
   console.log("\nLogin demo:");
   console.log("  Email: demo@tribo.ai");

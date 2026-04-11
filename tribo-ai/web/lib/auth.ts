@@ -1,16 +1,15 @@
 /**
- * Auth mock para modo de desenvolvimento.
+ * Auth para dev-mode.
  *
- * Em produção isto será substituído pelo NextAuth (magic link via Resend).
- * Para o MVP local, retorna sempre o tenant + usuário demo que foi criado
- * pelo script de seed.
+ * Lê qual usuário está "logado" a partir de um cookie `tribo_dev_user`.
+ * Se o cookie não existir, cai no usuário demo padrão.
  *
- * Uso:
- *   import { getSession } from "@/lib/auth";
- *   const session = await getSession();
- *   if (!session) return NextResponse.json({ error: "unauth" }, { status: 401 });
+ * Em produção, substituir por NextAuth + magic link via Resend.
+ * A interface `DevSession` é propositalmente compatível com o shape
+ * que o NextAuth vai expor.
  */
 
+import { cookies } from "next/headers";
 import { prisma } from "./db";
 
 export interface DevSession {
@@ -28,21 +27,52 @@ export interface DevSession {
   };
 }
 
-const DEMO_USER_EMAIL = "demo@tribo.ai";
-
-let cached: DevSession | null = null;
+export const DEFAULT_DEMO_EMAIL = "demo@tribo.ai";
+export const DEV_COOKIE_NAME = "tribo_dev_user";
 
 export async function getSession(): Promise<DevSession | null> {
-  if (cached) return cached;
+  const cookieStore = await cookies();
+  const email = cookieStore.get(DEV_COOKIE_NAME)?.value ?? DEFAULT_DEMO_EMAIL;
 
   const user = await prisma.user.findFirst({
-    where: { email: DEMO_USER_EMAIL },
+    where: { email },
     include: { tenant: true },
   });
 
-  if (!user) return null;
+  // Se cookie aponta pra usuário que não existe, cai no default
+  if (!user && email !== DEFAULT_DEMO_EMAIL) {
+    const fallback = await prisma.user.findFirst({
+      where: { email: DEFAULT_DEMO_EMAIL },
+      include: { tenant: true },
+    });
+    if (!fallback) return null;
+    return serialize(fallback);
+  }
 
-  cached = {
+  if (!user) return null;
+  return serialize(user);
+}
+
+export async function requireSession(): Promise<DevSession> {
+  const s = await getSession();
+  if (!s) {
+    throw new Error(
+      "Nenhum tenant demo encontrado. Rode: cd tribo-ai/web && npm run db:seed",
+    );
+  }
+  return s;
+}
+
+function serialize(user: {
+  id: string;
+  tenantId: string;
+  email: string;
+  name: string;
+  isAdmin: boolean;
+  isOwner: boolean;
+  tenant: { id: string; displayName: string };
+}): DevSession {
+  return {
     user: {
       id: user.id,
       tenantId: user.tenantId,
@@ -56,20 +86,4 @@ export async function getSession(): Promise<DevSession | null> {
       displayName: user.tenant.displayName,
     },
   };
-
-  return cached;
-}
-
-export async function requireSession(): Promise<DevSession> {
-  const s = await getSession();
-  if (!s) {
-    throw new Error(
-      "Nenhum tenant demo encontrado. Rode: cd tribo-ai/web && npm run db:seed",
-    );
-  }
-  return s;
-}
-
-export function clearSessionCache() {
-  cached = null;
 }
