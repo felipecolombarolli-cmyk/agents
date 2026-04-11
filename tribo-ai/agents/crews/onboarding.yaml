@@ -1,0 +1,118 @@
+# Crew: Onboarding
+# Do contrato assinado ao cliente ativo em 7 dias.
+
+crew_id: onboarding
+name: Onboarding
+description: Ativa novo cliente em 7 dias sem intervenção humana
+orchestrator_model: claude-sonnet-4-6
+budget_daily_brl: 20
+
+agents:
+  - id: welcome-sender
+    model: claude-haiku-4-5
+    description: Envia boas-vindas + link da anamnese por email e WhatsApp
+    prompt_file: ../prompts/onboarding/welcome.md
+    tools:
+      - resend_email
+      - whatsapp_api
+
+  - id: anamnese-conductor
+    model: claude-sonnet-4-6
+    description: Conduz anamnese conversacional (se cliente preferir chat)
+    prompt_file: ../prompts/onboarding/anamnese-conductor.md
+    context_required:
+      - anamnese_questions
+    max_turns: 15
+
+  - id: tenant-creator
+    model: none
+    description: Cria tenant, aplica config, ativa módulos
+    tools:
+      - prisma_db
+    idempotent: true
+
+  - id: branding-applier
+    model: claude-haiku-4-5  # só pra normalizar cores/contraste
+    description: Processa logo, valida cores, gera theme CSS
+    tools:
+      - image_optimizer
+      - s3_upload
+
+  - id: data-importer
+    model: claude-sonnet-4-6  # usa IA pra mapear colunas de CSV desconhecidos
+    description: Importa CSV de colaboradores + ponto, detecta formato
+    prompt_file: ../prompts/onboarding/data-importer.md
+    tools:
+      - csv_parser
+      - xlsx_parser
+      - prisma_db
+
+  - id: invite-sender
+    model: none
+    description: Envia convite de criação de conta para cada colaborador
+    tools:
+      - resend_email
+    batch: true
+    rate_limit: 100/minute
+
+  - id: training-d1
+    model: claude-haiku-4-5
+    description: Envia tutorial do dia 1 (como postar no feed)
+    prompt_file: ../prompts/onboarding/training-d1.md
+    schedule_delay_days: 1
+
+  - id: training-d3
+    model: claude-haiku-4-5
+    description: Envia tutorial do dia 3 (como reconhecer colegas)
+    prompt_file: ../prompts/onboarding/training-d3.md
+    schedule_delay_days: 3
+
+  - id: training-d5
+    model: claude-haiku-4-5
+    description: Envia tutorial do dia 5 (use o chatbot de RH)
+    prompt_file: ../prompts/onboarding/training-d5.md
+    schedule_delay_days: 5
+
+  - id: health-checker-d7
+    model: claude-haiku-4-5
+    description: Calcula health score do tenant após 7 dias
+    prompt_file: ../prompts/onboarding/health-checker.md
+    schedule_delay_days: 7
+    output_schema:
+      type: object
+      properties:
+        health_score: { type: integer, min: 0, max: 100 }
+        status: { enum: [healthy, at_risk, critical] }
+        signals: { type: array }
+        recommended_action: { type: string }
+
+  - id: at-risk-rescuer
+    model: claude-sonnet-4-6
+    description: Se health score baixo, envia check-in pessoal
+    prompt_file: ../prompts/onboarding/rescuer.md
+    trigger: health_score < 40
+    tools:
+      - whatsapp_api
+
+escalation_rules:
+  - condition: convite_sem_resposta_48h
+    action: notify_founder
+    priority: P2
+
+  - condition: data_importer.error
+    action: notify_founder
+    priority: P1
+    reason: "Importação de dados falhou — cliente bloqueado"
+
+  - condition: health_score_d5 == 0
+    action: call_from_founder
+    priority: P0
+    reason: "Cliente não usou nada em 5 dias — risco altíssimo"
+
+kpis:
+  - name: ativacao_7_dias_pct
+    target: 0.80
+  - name: nps_onboarding
+    target: 50
+  - name: tickets_primeiro_mes
+    target_max: 2  # por cliente

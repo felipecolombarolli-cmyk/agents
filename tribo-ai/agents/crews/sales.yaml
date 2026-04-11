@@ -1,0 +1,121 @@
+# Crew: Vendas (Sales)
+# Do lead ao contrato assinado, sem intervenção humana.
+
+crew_id: sales
+name: Vendas
+description: Transforma leads em clientes pagantes
+orchestrator_model: claude-sonnet-4-6
+budget_daily_brl: 30
+escalation_channel: whatsapp
+escalation_phone: ${FOUNDER_WHATSAPP}
+
+agents:
+  - id: lead-enricher
+    model: claude-haiku-4-5
+    description: Enriquece lead com dados públicos (CNPJ, setor, n° funcionários)
+    prompt_file: ../prompts/sales/lead-enricher.md
+    tools:
+      - receita_ws_api
+      - web_search
+    timeout_seconds: 30
+    max_cost_brl: 0.50
+
+  - id: lead-qualifier
+    model: claude-haiku-4-5
+    description: Decide se lead é ICP (15-150 funcionários, Brasil, PME)
+    prompt_file: ../prompts/sales/lead-qualifier.md
+    tools: []
+    timeout_seconds: 10
+    max_cost_brl: 0.10
+
+  - id: outreach-writer
+    model: claude-sonnet-4-6
+    description: Escreve primeira mensagem personalizada de abordagem
+    prompt_file: ../prompts/sales/outreach-writer.md
+    tools: []
+    timeout_seconds: 30
+    max_cost_brl: 0.30
+
+  - id: outreach-sender
+    model: none  # determinístico, sem LLM
+    description: Envia mensagem via email ou WhatsApp
+    tools:
+      - resend_email
+      - whatsapp_api
+    max_cost_brl: 0.05
+
+  - id: follow-up-bot
+    model: claude-haiku-4-5
+    description: Envia follow-ups progressivos (D+2, D+5, D+10)
+    prompt_file: ../prompts/sales/follow-up.md
+    schedule: "0 10 * * *"  # diário às 10h
+    max_cost_brl: 0.20
+
+  - id: reply-classifier
+    model: claude-haiku-4-5
+    description: Classifica resposta do lead em categorias
+    prompt_file: ../prompts/sales/reply-classifier.md
+    output_schema:
+      type: object
+      properties:
+        category:
+          enum: [interested, objection, not_interested, unsubscribe, other]
+        sentiment:
+          enum: [positive, neutral, negative, angry]
+        next_action: { type: string }
+    max_cost_brl: 0.10
+
+  - id: objection-handler
+    model: claude-sonnet-4-6
+    description: Responde objeções comuns (preço, timing, autoridade, necessidade)
+    prompt_file: ../prompts/sales/objection-handler.md
+    max_retries: 2  # após 2 tentativas, escala
+    max_cost_brl: 0.40
+
+  - id: demo-scheduler
+    model: none
+    description: Agenda demo no Cal.com
+    tools:
+      - cal_com_api
+    max_cost_brl: 0.05
+
+  - id: proposal-writer
+    model: claude-sonnet-4-6
+    description: Gera proposta customizada baseada em dados do lead
+    prompt_file: ../prompts/sales/proposal-writer.md
+    output_format: pdf
+    max_cost_brl: 0.80
+
+  - id: contract-sender
+    model: none
+    description: Envia contrato via Clicksign
+    tools:
+      - clicksign_api
+    max_cost_brl: 0.05
+
+escalation_rules:
+  - condition: lead.employee_count > 150
+    action: handoff_to_founder
+    reason: "Empresa grande — fora do ICP, pode virar enterprise deal"
+
+  - condition: agent == 'objection-handler' && retry_count >= 2
+    action: handoff_to_founder
+    reason: "Objeção não resolvida após 2 tentativas"
+
+  - condition: reply.sentiment == 'angry'
+    action: handoff_to_founder
+    reason: "Lead irritado — evitar dano de marca"
+
+  - condition: proposal.discount_requested_pct > 20
+    action: handoff_to_founder
+    reason: "Desconto acima do autorizado"
+
+kpis:
+  - name: lead_to_demo_rate
+    target: 0.30
+  - name: demo_to_customer_rate
+    target: 0.25
+  - name: cac_brl
+    target_max: 500
+  - name: time_to_close_days
+    target_max: 7

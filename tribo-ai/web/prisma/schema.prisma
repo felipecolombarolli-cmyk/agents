@@ -1,0 +1,411 @@
+// Tribo.ai database schema
+// Multi-tenant SaaS for Brazilian PMEs (15-150 employees)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -------------------------------------------------------------------
+// TENANT (multi-tenancy root)
+// -------------------------------------------------------------------
+
+model Tenant {
+  id            String   @id @default(cuid())
+  slug          String   @unique // acme → acme.tribo.ai
+  displayName   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Config gerado pela anamnese
+  config        Json     // TenantConfig (ver docs/anamnese.md)
+
+  // Branding
+  logoUrl       String?
+  primaryColor  String   @default("#6366f1")
+  secondaryColor String  @default("#f59e0b")
+
+  // Status
+  status        TenantStatus @default(ACTIVE)
+  planTier      PlanTier     @default(TRIAL)
+  trialEndsAt   DateTime?
+
+  // Relacionamentos
+  users         User[]
+  posts         Post[]
+  kudos         Kudos[]
+  surveys       Survey[]
+  surveyResponses SurveyResponse[]
+  attendances   Attendance[]
+  integrations  Integration[]
+  auditLogs     AuditLog[]
+  escalations   Escalation[]
+}
+
+enum TenantStatus {
+  ONBOARDING  // anamnese em andamento
+  ACTIVE
+  AT_RISK     // health score baixo
+  SUSPENDED   // inadimplência
+  CHURNED
+}
+
+enum PlanTier {
+  TRIAL
+  STARTER    // até 30 colabs
+  GROWTH     // 31-80 colabs
+  SCALE      // 81-150 colabs
+}
+
+// -------------------------------------------------------------------
+// USER (colaborador)
+// -------------------------------------------------------------------
+
+model User {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  email      String
+  name       String
+  role       String?  // Cargo
+  department String?  // Área
+  branch     String?  // Unidade/Filial
+  employeeId String?  // Matrícula (opcional)
+  managerId  String?
+  manager    User?    @relation("ManagerReports", fields: [managerId], references: [id])
+  reports    User[]   @relation("ManagerReports")
+
+  bio        String?  @db.Text
+  skills     String[] @default([])
+  avatarUrl  String?
+  startedAt  DateTime? // Data de admissão
+
+  isAdmin    Boolean  @default(false)
+  isOwner    Boolean  @default(false) // dono do tenant
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  lastLoginAt DateTime?
+
+  // Relacionamentos
+  posts          Post[]
+  comments       Comment[]
+  likes          Like[]
+  kudosSent      Kudos[]  @relation("KudosSender")
+  kudosReceived  Kudos[]  @relation("KudosReceiver")
+  surveyResponses SurveyResponse[]
+  attendances    Attendance[]
+  chatSessions   ChatSession[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([email])
+}
+
+// -------------------------------------------------------------------
+// FEED
+// -------------------------------------------------------------------
+
+model Post {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User     @relation(fields: [authorId], references: [id])
+
+  content    String   @db.Text
+  imageUrl   String?
+  visibility Visibility @default(COMPANY)
+  pinned     Boolean  @default(false)
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  deletedAt  DateTime?
+
+  comments   Comment[]
+  likes      Like[]
+
+  @@index([tenantId, createdAt])
+}
+
+enum Visibility {
+  COMPANY     // Empresa inteira
+  DEPARTMENT  // Só o departamento do autor
+  BRANCH      // Só a unidade/filial
+}
+
+model Comment {
+  id         String   @id @default(cuid())
+  postId     String
+  post       Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User     @relation(fields: [authorId], references: [id])
+  content    String   @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([postId])
+}
+
+model Like {
+  id         String   @id @default(cuid())
+  postId     String
+  post       Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  createdAt  DateTime @default(now())
+
+  @@unique([postId, userId])
+}
+
+// -------------------------------------------------------------------
+// KUDOS (reconhecimento entre pares)
+// -------------------------------------------------------------------
+
+model Kudos {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  senderId   String
+  sender     User     @relation("KudosSender", fields: [senderId], references: [id])
+  receiverId String
+  receiver   User     @relation("KudosReceiver", fields: [receiverId], references: [id])
+
+  value      String   // Um dos valores da empresa (definidos na anamnese)
+  message    String   @db.VarChar(200)
+
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([receiverId])
+}
+
+// -------------------------------------------------------------------
+// SURVEYS (pesquisa de clima)
+// -------------------------------------------------------------------
+
+model Survey {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  title      String
+  description String? @db.Text
+  templateId String?  // referência ao template (NR-1, eNPS, etc)
+
+  questions  Json     // [{ id, type, text, options }]
+
+  status     SurveyStatus @default(DRAFT)
+  startsAt   DateTime?
+  endsAt     DateTime?
+  anonymous  Boolean  @default(true)
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  responses  SurveyResponse[]
+
+  @@index([tenantId])
+}
+
+enum SurveyStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+  ARCHIVED
+}
+
+model SurveyResponse {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  surveyId   String
+  survey     Survey   @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+
+  // Pode ser nulo se for anônima
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+
+  answers    Json     // [{ questionId, value }]
+  sentiment  Float?   // -1 a 1 (negativo a positivo) calculado por IA
+  sentimentLabel String? // "positive" | "neutral" | "negative"
+
+  createdAt  DateTime @default(now())
+
+  @@index([surveyId])
+}
+
+// -------------------------------------------------------------------
+// ATTENDANCE (importação de sistema de ponto)
+// -------------------------------------------------------------------
+
+model Attendance {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+
+  date       DateTime @db.Date
+  type       AttendanceType
+  minutes    Int?     // minutos trabalhados, se aplicável
+  source     String   // "tangerino" | "pontomais" | "secullum" | "ahgora" | "manual" | "csv_generic"
+  notes      String?
+  importedAt DateTime @default(now())
+
+  @@unique([userId, date])
+  @@index([tenantId, date])
+}
+
+enum AttendanceType {
+  PRESENT       // trabalhou normal
+  REMOTE        // home office
+  VACATION      // férias
+  SICK_LEAVE    // atestado
+  UNPAID_LEAVE  // licença não remunerada
+  MATERNITY     // licença-maternidade
+  PATERNITY     // licença-paternidade
+  ABSENT        // falta
+  HOLIDAY       // feriado
+  PARTIAL       // meio período / atraso / saída antecipada
+}
+
+// -------------------------------------------------------------------
+// INTEGRATIONS (ponto, pagamento, etc)
+// -------------------------------------------------------------------
+
+model Integration {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  type       IntegrationType
+  provider   String    // "tangerino" | "pontomais" | "stripe" | etc
+  config     Json      // credenciais criptografadas, config específica
+  status     IntegrationStatus @default(ACTIVE)
+  lastSyncAt DateTime?
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+enum IntegrationType {
+  PUNCH_CLOCK     // Sistema de ponto
+  PAYMENT         // Stripe, Asaas
+  MESSAGING       // WhatsApp, Slack
+  HR_SYSTEM       // TOTVS, Senior
+}
+
+enum IntegrationStatus {
+  ACTIVE
+  PAUSED
+  ERROR
+}
+
+// -------------------------------------------------------------------
+// CHATBOT SESSIONS
+// -------------------------------------------------------------------
+
+model ChatSession {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String?  // gerado a partir da primeira mensagem
+
+  messages   ChatMessage[]
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, updatedAt])
+}
+
+model ChatMessage {
+  id         String   @id @default(cuid())
+  sessionId  String
+  session    ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  role       MessageRole
+  content    String   @db.Text
+  tokensUsed Int?
+  costBrl    Float?
+  createdAt  DateTime @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  TOOL
+}
+
+// -------------------------------------------------------------------
+// ESCALATIONS (tickets pro fundador / RH humano)
+// -------------------------------------------------------------------
+
+model Escalation {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  source     String    // "chatbot" | "survey" | "agent" | "user"
+  priority   Priority  @default(MEDIUM)
+  title      String
+  summary    String    @db.Text
+  context    Json?     // dados estruturados do evento
+  status     EscalationStatus @default(OPEN)
+  assignedTo String?   // userId do responsável humano
+  resolvedAt DateTime?
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([tenantId, status])
+}
+
+enum Priority {
+  P0  // crítico, responde agora
+  P1  // alta, 2h
+  P2  // média, 1 dia
+  P3  // baixa, 1 semana
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum EscalationStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  DISMISSED
+}
+
+// -------------------------------------------------------------------
+// AUDIT LOG (LGPD compliance)
+// -------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String?
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  actorId    String?  // quem fez (pode ser "system" ou "agent:<id>")
+  action     String   // "create" | "update" | "delete" | "view" | ...
+  entity     String   // "User" | "Post" | ...
+  entityId   String?
+  metadata   Json?    // diff, ip, user-agent
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([entity, entityId])
+}
