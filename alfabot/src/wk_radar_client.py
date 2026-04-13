@@ -67,6 +67,11 @@ class WKRadarClient:
         self._initialized = True
 
         self._session = requests.Session()
+        # Servidor WK Radar usa certificado auto-assinado
+        self._session.verify = False
+        # Suprime warning de InsecureRequestWarning
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         # Retry automatico para erros de conexao e 502/503/504
         retry_strategy = Retry(
             total=3,
