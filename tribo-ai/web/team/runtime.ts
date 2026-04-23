@@ -9,7 +9,9 @@
  * - Circuit breaker: pausa agente após 3 falhas seguidas
  */
 
+import OpenAI from "openai";
 import { claude, MODELS, calculateCostBrl } from "../lib/ai/client";
+import { minimax, MINIMAX_MODELS, calculateMiniMaxCostBrl } from "../lib/ai/minimax";
 import { TOOL_HANDLERS, TOOL_SCHEMAS } from "./tools";
 import { logAgentExecution } from "./logger";
 import { canSpend, trackSpend } from "./budget";
@@ -22,8 +24,12 @@ import type {
   ToolContext,
 } from "./types";
 
-const isMockMode = () =>
-  process.env.MOCK_TOOLS === "1" || !process.env.ANTHROPIC_API_KEY;
+function isMockMode(agent: AgentDefinition): boolean {
+  if (process.env.MOCK_TOOLS === "1") return true;
+  const usesMinimax = agent.model === "minimax" || agent.model === "minimax-lightning";
+  if (usesMinimax) return !process.env.MINIMAX_API_KEY;
+  return !process.env.ANTHROPIC_API_KEY;
+}
 
 // Circuit breaker: track consecutive failures per agent
 const failureCount = new Map<string, number>();
@@ -97,102 +103,28 @@ export async function runAgent(
   let tokensIn = 0;
   let tokensOut = 0;
 
-  const mockMode = isMockMode();
+  const mockMode = isMockMode(agent);
   const toolCtx: ToolContext = { event, agent, mockMode };
+  const usesMinimax = agent.model === "minimax" || agent.model === "minimax-lightning";
 
   try {
     if (mockMode) {
       output = await runMocked(agent, event, toolCalls, toolCtx);
       success = true;
+    } else if (usesMinimax) {
+      // MiniMax via OpenAI-compatible SDK
+      const result = await runWithMiniMax(agent, event, toolCalls, toolCtx);
+      output = result.output;
+      tokensIn = result.tokensIn;
+      tokensOut = result.tokensOut;
+      success = true;
     } else {
-      const model = agent.model === "sonnet" ? MODELS.SONNET : MODELS.HAIKU;
-      const toolSchemas = agent.tools.map((t) => TOOL_SCHEMAS[t]);
-
-      const messages: { role: "user" | "assistant"; content: unknown }[] = [
-        {
-          role: "user",
-          content: `Evento recebido: ${event.name}\n\nPayload:\n${JSON.stringify(event.payload, null, 2)}`,
-        },
-      ];
-
-      let iteration = 0;
-      while (iteration < 8) {
-        iteration++;
-        const response = await claude.messages.create({
-          model,
-          max_tokens: agent.maxTokens,
-          temperature: agent.temperature,
-          system: [
-            {
-              type: "text",
-              text: agent.systemPrompt,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
-          tools: toolSchemas.length > 0 ? toolSchemas : undefined,
-          messages: messages as never,
-        });
-
-        tokensIn += response.usage.input_tokens;
-        tokensOut += response.usage.output_tokens;
-
-        const toolUseBlocks = response.content.filter(
-          (b) => b.type === "tool_use",
-        ) as Array<{
-          type: "tool_use";
-          id: string;
-          name: string;
-          input: Record<string, unknown>;
-        }>;
-        const textBlocks = response.content.filter(
-          (b) => b.type === "text",
-        ) as Array<{ type: "text"; text: string }>;
-
-        if (toolUseBlocks.length === 0) {
-          output = textBlocks.map((t) => t.text).join("\n");
-          success = true;
-          break;
-        }
-
-        messages.push({ role: "assistant", content: response.content });
-        const toolResults: unknown[] = [];
-        for (const block of toolUseBlocks) {
-          const handler = TOOL_HANDLERS[block.name as keyof typeof TOOL_HANDLERS];
-          if (!handler) {
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: block.id,
-              content: `tool desconhecida: ${block.name}`,
-              is_error: true,
-            });
-            continue;
-          }
-          try {
-            const { output: toolOutput, mocked } = await handler(block.input, toolCtx);
-            toolCalls.push({
-              tool: block.name as never,
-              input: block.input,
-              output: toolOutput,
-              mocked,
-            });
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: block.id,
-              content: JSON.stringify(toolOutput),
-            });
-          } catch (err) {
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: block.id,
-              content: err instanceof Error ? err.message : "erro",
-              is_error: true,
-            });
-          }
-        }
-        messages.push({ role: "user", content: toolResults });
-
-        if (response.stop_reason !== "tool_use") break;
-      }
+      // Claude (Anthropic SDK)
+      const result = await runWithClaude(agent, event, toolCalls, toolCtx);
+      output = result.output;
+      tokensIn = result.tokensIn;
+      tokensOut = result.tokensOut;
+      success = true;
     }
   } catch (err) {
     errorMsg = err instanceof Error ? err.message : "erro desconhecido";
@@ -202,11 +134,19 @@ export async function runAgent(
   const durationMs = Date.now() - startedAt;
   const costBrl = mockMode
     ? 0
-    : calculateCostBrl(
-        agent.model === "sonnet" ? MODELS.SONNET : MODELS.HAIKU,
-        tokensIn,
-        tokensOut,
-      );
+    : usesMinimax
+      ? calculateMiniMaxCostBrl(
+          agent.model === "minimax-lightning"
+            ? MINIMAX_MODELS.M25_LIGHTNING
+            : MINIMAX_MODELS.M25,
+          tokensIn,
+          tokensOut,
+        )
+      : calculateCostBrl(
+          agent.model === "sonnet" ? MODELS.SONNET : MODELS.HAIKU,
+          tokensIn,
+          tokensOut,
+        );
 
   // Track budget
   trackSpend(agent.crew, costBrl);
@@ -260,7 +200,178 @@ export function resetCircuitBreaker(agentId: string) {
   failureCount.set(agentId, 0);
 }
 
+// ─────────────────────────────────────────────
+// MiniMax executor (OpenAI-compatible SDK)
+// ─────────────────────────────────────────────
+
+async function runWithMiniMax(
+  agent: AgentDefinition,
+  event: AgentEvent,
+  toolCalls: ToolCallLog[],
+  ctx: ToolContext,
+): Promise<{ output: unknown; tokensIn: number; tokensOut: number }> {
+  const modelId = agent.model === "minimax-lightning"
+    ? MINIMAX_MODELS.M25_LIGHTNING
+    : MINIMAX_MODELS.M25;
+  const toolSchemas = agent.tools.map((t) => TOOL_SCHEMAS[t]);
+
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: "system", content: agent.systemPrompt },
+    {
+      role: "user",
+      content: `Evento recebido: ${event.name}\n\nPayload:\n${JSON.stringify(event.payload, null, 2)}`,
+    },
+  ];
+
+  const tools: OpenAI.Chat.ChatCompletionTool[] = toolSchemas.map((t) => ({
+    type: "function" as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema,
+    },
+  }));
+
+  let tIn = 0;
+  let tOut = 0;
+  let iteration = 0;
+
+  while (iteration < 8) {
+    iteration++;
+    const response = await minimax.chat.completions.create({
+      model: modelId,
+      max_tokens: agent.maxTokens,
+      temperature: agent.temperature,
+      messages,
+      tools: tools.length > 0 ? tools : undefined,
+    });
+
+    const choice = response.choices[0];
+    tIn += response.usage?.prompt_tokens ?? 0;
+    tOut += response.usage?.completion_tokens ?? 0;
+
+    if (!choice.message.tool_calls || choice.message.tool_calls.length === 0) {
+      return { output: choice.message.content ?? "", tokensIn: tIn, tokensOut: tOut };
+    }
+
+    messages.push(choice.message);
+
+    for (const tc of choice.message.tool_calls) {
+      if (tc.type !== "function") continue;
+      const fnCall = tc as OpenAI.Chat.ChatCompletionMessageToolCall & { type: "function" };
+      const handler = TOOL_HANDLERS[fnCall.function.name as keyof typeof TOOL_HANDLERS];
+      let toolOutput: unknown;
+      let mocked = false;
+
+      if (!handler) {
+        toolOutput = { error: `tool desconhecida: ${fnCall.function.name}` };
+      } else {
+        try {
+          const args = JSON.parse(fnCall.function.arguments);
+          const result = await handler(args, ctx);
+          toolOutput = result.output;
+          mocked = result.mocked;
+          toolCalls.push({ tool: fnCall.function.name as never, input: args, output: toolOutput, mocked });
+        } catch (err) {
+          toolOutput = { error: err instanceof Error ? err.message : "erro" };
+        }
+      }
+
+      messages.push({
+        role: "tool" as const,
+        tool_call_id: fnCall.id,
+        content: JSON.stringify(toolOutput),
+      });
+    }
+
+    if (choice.finish_reason !== "tool_calls") break;
+  }
+
+  return { output: messages[messages.length - 1], tokensIn: tIn, tokensOut: tOut };
+}
+
+// ─────────────────────────────────────────────
+// Claude executor (Anthropic SDK)
+// ─────────────────────────────────────────────
+
+async function runWithClaude(
+  agent: AgentDefinition,
+  event: AgentEvent,
+  toolCalls: ToolCallLog[],
+  ctx: ToolContext,
+): Promise<{ output: unknown; tokensIn: number; tokensOut: number }> {
+  const model = agent.model === "sonnet" ? MODELS.SONNET : MODELS.HAIKU;
+  const toolSchemas = agent.tools.map((t) => TOOL_SCHEMAS[t]);
+  let tIn = 0;
+  let tOut = 0;
+
+  const messages: { role: "user" | "assistant"; content: unknown }[] = [
+    {
+      role: "user",
+      content: `Evento recebido: ${event.name}\n\nPayload:\n${JSON.stringify(event.payload, null, 2)}`,
+    },
+  ];
+
+  let iteration = 0;
+  while (iteration < 8) {
+    iteration++;
+    const response = await claude.messages.create({
+      model,
+      max_tokens: agent.maxTokens,
+      temperature: agent.temperature,
+      system: [
+        {
+          type: "text",
+          text: agent.systemPrompt,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      tools: toolSchemas.length > 0 ? toolSchemas : undefined,
+      messages: messages as never,
+    });
+
+    tIn += response.usage.input_tokens;
+    tOut += response.usage.output_tokens;
+
+    const toolUseBlocks = response.content.filter(
+      (b) => b.type === "tool_use",
+    ) as Array<{ type: "tool_use"; id: string; name: string; input: Record<string, unknown> }>;
+    const textBlocks = response.content.filter(
+      (b) => b.type === "text",
+    ) as Array<{ type: "text"; text: string }>;
+
+    if (toolUseBlocks.length === 0) {
+      return { output: textBlocks.map((t) => t.text).join("\n"), tokensIn: tIn, tokensOut: tOut };
+    }
+
+    messages.push({ role: "assistant", content: response.content });
+    const toolResults: unknown[] = [];
+    for (const block of toolUseBlocks) {
+      const handler = TOOL_HANDLERS[block.name as keyof typeof TOOL_HANDLERS];
+      if (!handler) {
+        toolResults.push({ type: "tool_result", tool_use_id: block.id, content: `tool desconhecida: ${block.name}`, is_error: true });
+        continue;
+      }
+      try {
+        const { output: toolOutput, mocked } = await handler(block.input, ctx);
+        toolCalls.push({ tool: block.name as never, input: block.input, output: toolOutput, mocked });
+        toolResults.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(toolOutput) });
+      } catch (err) {
+        toolResults.push({ type: "tool_result", tool_use_id: block.id, content: err instanceof Error ? err.message : "erro", is_error: true });
+      }
+    }
+    messages.push({ role: "user", content: toolResults });
+
+    if (response.stop_reason !== "tool_use") break;
+  }
+
+  return { output: null, tokensIn: tIn, tokensOut: tOut };
+}
+
+// ─────────────────────────────────────────────
 // Mock runner
+// ─────────────────────────────────────────────
+
 async function runMocked(
   agent: AgentDefinition,
   event: AgentEvent,

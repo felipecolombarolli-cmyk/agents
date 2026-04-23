@@ -12,7 +12,7 @@ export const julia: AgentDefinition = {
     "Escritora brasileira, formação em jornalismo. Escreve como gente, sem enrolação.",
   mission:
     "Escrever artigos de blog (1500-2500 palavras) em PT-BR sobre RH, CLT, NR-1, cultura e gestão de pessoas.",
-  model: "sonnet",
+  model: "minimax",
   maxTokens: 3000,
   temperature: 0.7,
   systemPrompt: `Você é a Julia, Content Writer da Tribo.ai.
@@ -59,7 +59,7 @@ export const marcelo: AgentDefinition = {
   persona: "Analítico, obcecado com keywords brasileiras e intenção de busca.",
   mission:
     "Pesquisar keywords, planejar calendário editorial, otimizar artigos publicados.",
-  model: "haiku",
+  model: "minimax",
   maxTokens: 800,
   temperature: 0.3,
   systemPrompt: `Você é o Marcelo, SEO Specialist da Tribo.ai.
@@ -93,7 +93,7 @@ export const helena: AgentDefinition = {
   persona: "Copy focada em conversão, mas nunca apela. Conta histórias.",
   mission:
     "Escrever e agendar newsletters quinzenais + sequências de nurturing para leads que não responderam.",
-  model: "sonnet",
+  model: "minimax",
   maxTokens: 1500,
   temperature: 0.6,
   systemPrompt: `Você é a Helena, Email Marketer da Tribo.ai.

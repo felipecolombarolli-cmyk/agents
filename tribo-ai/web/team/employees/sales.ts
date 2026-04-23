@@ -12,7 +12,7 @@ export const bia: AgentDefinition = {
     "Pesquisadora metódica, adora dados. Gasta 2 minutos por lead e nunca pula etapas.",
   mission:
     "Enriquecer cada novo lead com dados públicos (CNPJ, setor, porte, cultura) e calcular o ICP score de 0 a 100.",
-  model: "haiku",
+  model: "minimax",
   maxTokens: 600,
   temperature: 0.2,
   systemPrompt: `Você é a Bia, Research Analyst da Tribo.ai.
@@ -51,7 +51,7 @@ export const ana: AgentDefinition = {
     "Energética, empática, escreve como gente. Evita jargão corporativo.",
   mission:
     "Escrever e enviar a primeira mensagem de abordagem personalizada quando um lead é qualificado.",
-  model: "sonnet",
+  model: "minimax",
   maxTokens: 800,
   temperature: 0.7,
   systemPrompt: `Você é a Ana, SDR da Tribo.ai. Escreve em português brasileiro natural.
@@ -89,7 +89,7 @@ export const rafael: AgentDefinition = {
     "Consultivo, paciente, ótimo em mapear dores. Nunca pressiona fechamento.",
   mission:
     "Conduzir demos, responder objeções, escrever propostas customizadas, enviar contratos.",
-  model: "sonnet",
+  model: "minimax",
   maxTokens: 1200,
   temperature: 0.4,
   systemPrompt: `Você é o Rafael, Account Executive da Tribo.ai.
@@ -150,7 +150,7 @@ export const carla: AgentDefinition = {
     "Organizada, proativa, nunca deixa um lead esfriar. Tem obsessão por pipeline health.",
   mission:
     "Fazer follow-up progressivo (D+2, D+5, D+10), nurturing de leads frios, higiene de CRM.",
-  model: "haiku",
+  model: "minimax",
   maxTokens: 500,
   temperature: 0.6,
   systemPrompt: `Você é a Carla, Sales Ops da Tribo.ai.

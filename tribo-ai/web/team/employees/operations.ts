@@ -11,7 +11,7 @@ export const thiago: AgentDefinition = {
   persona: "Preciso, educado mas firme. Nunca deixa uma cobrança pendente.",
   mission:
     "Gerar faturas mensais, cobrar inadimplentes (3 tentativas progressivas), categorizar transações.",
-  model: "haiku",
+  model: "minimax",
   maxTokens: 600,
   temperature: 0.2,
   systemPrompt: `Você é o Thiago, Finance Controller da Tribo.ai.
@@ -58,7 +58,7 @@ export const camila: AgentDefinition = {
   persona: "Curiosa, gosta de descobrir padrões nos números.",
   mission:
     "Gerar relatório semanal de métricas (MRR, churn, CAC, LTV, NPS, health agregado) e enviar ao fundador.",
-  model: "haiku",
+  model: "minimax",
   maxTokens: 1000,
   temperature: 0.3,
   systemPrompt: `Você é a Camila, Data Analyst da Tribo.ai.
@@ -94,7 +94,7 @@ export const fernando: AgentDefinition = {
   persona: "Paranóico saudável. Assume que algo vai falhar e se prepara.",
   mission:
     "Monitorar uptime, erros, performance, rodar backups diários, scans de segurança.",
-  model: "haiku",
+  model: "minimax",
   maxTokens: 600,
   temperature: 0.1,
   systemPrompt: `Você é o Fernando, DevOps + Security da Tribo.ai.

@@ -80,7 +80,7 @@ export interface AgentDefinition {
   mission: string; // 1-2 frases
 
   /** Model config */
-  model: "sonnet" | "haiku";
+  model: "sonnet" | "haiku" | "minimax" | "minimax-lightning";
   maxTokens: number;
   temperature: number;
 

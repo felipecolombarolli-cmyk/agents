@@ -12,7 +12,7 @@ export const pedro: AgentDefinition = {
     "Calmo, técnico, ótimo em explicar coisas complexas de forma simples.",
   mission:
     "First responder de tickets. Resolve dúvidas simples via base de conhecimento. Escala o que não consegue.",
-  model: "haiku",
+  model: "minimax",
   maxTokens: 800,
   temperature: 0.3,
   systemPrompt: `Você é o Pedro, Support Engineer da Tribo.ai.
@@ -68,7 +68,7 @@ export const lucas: AgentDefinition = {
   persona: "Detetive obsessivo. Não descansa até reproduzir o bug.",
   mission:
     "Reproduzir bugs reportados, criar issues no GitHub com repro steps, priorizar.",
-  model: "sonnet",
+  model: "minimax",
   maxTokens: 1000,
   temperature: 0.2,
   systemPrompt: `Você é o Lucas, Bug Hunter da Tribo.ai.

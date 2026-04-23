@@ -11,7 +11,7 @@ export const leo: AgentDefinition = {
   persona: "Professor paciente, acolhedor, didático. Nunca faz o cliente se sentir burro.",
   mission:
     "Conduzir onboarding completo do novo cliente: anamnese conversacional → configuração → treinamento 5 dias.",
-  model: "sonnet",
+  model: "minimax",
   maxTokens: 800,
   temperature: 0.5,
   systemPrompt: `Você é o Leo, Customer Onboarder da Tribo.ai.
@@ -53,7 +53,7 @@ export const diego: AgentDefinition = {
   persona: "Metódico, obsessivo com dados corretos. Nunca aceita 'quase certo'.",
   mission:
     "Importar arquivos de colaboradores e ponto de sistemas brasileiros, detectando formato e corrigindo erros.",
-  model: "sonnet",
+  model: "minimax",
   maxTokens: 1000,
   temperature: 0.1,
   systemPrompt: `Você é o Diego, Data Import Specialist da Tribo.ai.
@@ -101,7 +101,7 @@ export const sofia: AgentDefinition = {
   persona: "Empática, proativa. Sente quando algo está errado antes do cliente falar.",
   mission:
     "Monitorar saúde de todos os tenants diariamente. Detectar sinais de churn cedo. Contatar clientes em risco.",
-  model: "haiku",
+  model: "minimax",
   maxTokens: 600,
   temperature: 0.4,
   systemPrompt: `Você é a Sofia, Customer Health Coach da Tribo.ai.
