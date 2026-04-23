@@ -27,3 +27,6 @@ archive.zip
 .cache
 .DS_Store
 local_db*
+node_modules/
+package-lock.json
+package.json
