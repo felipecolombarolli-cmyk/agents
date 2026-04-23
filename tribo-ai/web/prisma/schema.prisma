@@ -409,3 +409,28 @@ model AuditLog {
   @@index([tenantId, createdAt])
   @@index([entity, entityId])
 }
+
+// -------------------------------------------------------------------
+// AGENT LOG (execuções do time de agentes)
+// -------------------------------------------------------------------
+
+model AgentLog {
+  id         String   @id @default(cuid())
+  agentId    String   // "ana-sdr", "bia-researcher", etc.
+  crew       String   // "sales", "marketing", etc.
+  eventName  String   // "new_lead", "cron_daily", etc.
+  success    Boolean
+  output     Json?
+  toolCalls  Json?    // [{ tool, input, output, mocked }]
+  costBrl    Float    @default(0)
+  tokensIn   Int      @default(0)
+  tokensOut  Int      @default(0)
+  durationMs Int      @default(0)
+  escalated  Boolean  @default(false)
+  error      String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([agentId, createdAt])
+  @@index([crew, createdAt])
+  @@index([createdAt])
+}

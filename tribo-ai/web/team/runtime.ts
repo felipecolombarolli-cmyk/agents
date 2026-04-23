@@ -4,14 +4,15 @@
  * - Registra agentes pelo id e por triggers (event → agents[])
  * - Executa cada agente via Claude com tool use em loop
  * - Avalia escalation rules
- * - Retorna resultado estruturado
- *
- * Em modo mock (MOCK_TOOLS=1 ou sem ANTHROPIC_API_KEY), pula a chamada
- * ao Claude e retorna uma resposta sintética previsível para testes.
+ * - Persiste resultado no AgentLog
+ * - Verifica budget antes de executar
+ * - Circuit breaker: pausa agente após 3 falhas seguidas
  */
 
 import { claude, MODELS, calculateCostBrl } from "../lib/ai/client";
 import { TOOL_HANDLERS, TOOL_SCHEMAS } from "./tools";
+import { logAgentExecution } from "./logger";
+import { canSpend, trackSpend } from "./budget";
 import type {
   AgentDefinition,
   AgentEvent,
@@ -24,14 +25,16 @@ import type {
 const isMockMode = () =>
   process.env.MOCK_TOOLS === "1" || !process.env.ANTHROPIC_API_KEY;
 
+// Circuit breaker: track consecutive failures per agent
+const failureCount = new Map<string, number>();
+const CIRCUIT_BREAKER_THRESHOLD = 3;
+
 class Registry {
   private byId = new Map<string, AgentDefinition>();
   private byTrigger = new Map<EventName, string[]>();
 
   register(def: AgentDefinition) {
-    if (this.byId.has(def.id)) {
-      throw new Error(`Agente duplicado: ${def.id}`);
-    }
+    if (this.byId.has(def.id)) return; // idempotent
     this.byId.set(def.id, def);
     for (const trigger of def.triggers) {
       const list = this.byTrigger.get(trigger) ?? [];
@@ -58,10 +61,6 @@ class Registry {
 
 export const registry = new Registry();
 
-// ─────────────────────────────────────────────
-// Executor
-// ─────────────────────────────────────────────
-
 export async function runAgent(
   agentId: string,
   event: AgentEvent,
@@ -69,6 +68,25 @@ export async function runAgent(
   const agent = registry.get(agentId);
   if (!agent) {
     return errorResult(agentId, event, `Agente não registrado: ${agentId}`);
+  }
+
+  // Circuit breaker
+  const failures = failureCount.get(agentId) ?? 0;
+  if (failures >= CIRCUIT_BREAKER_THRESHOLD) {
+    return errorResult(
+      agentId,
+      event,
+      `Circuit breaker aberto: ${agentId} falhou ${failures}x seguidas. Reset manual necessário.`,
+    );
+  }
+
+  // Budget check
+  if (!canSpend(agent.crew)) {
+    return errorResult(
+      agentId,
+      event,
+      `Budget diário excedido para crew "${agent.crew}". Agente pausado.`,
+    );
   }
 
   const startedAt = Date.now();
@@ -84,18 +102,13 @@ export async function runAgent(
 
   try {
     if (mockMode) {
-      // Modo mock: simula execução sem chamar Claude
       output = await runMocked(agent, event, toolCalls, toolCtx);
       success = true;
     } else {
-      // Modo real: chama Claude com tool use loop
       const model = agent.model === "sonnet" ? MODELS.SONNET : MODELS.HAIKU;
       const toolSchemas = agent.tools.map((t) => TOOL_SCHEMAS[t]);
 
-      const messages: {
-        role: "user" | "assistant";
-        content: unknown;
-      }[] = [
+      const messages: { role: "user" | "assistant"; content: unknown }[] = [
         {
           role: "user",
           content: `Evento recebido: ${event.name}\n\nPayload:\n${JSON.stringify(event.payload, null, 2)}`,
@@ -123,7 +136,6 @@ export async function runAgent(
         tokensIn += response.usage.input_tokens;
         tokensOut += response.usage.output_tokens;
 
-        // Processa blocos de resposta
         const toolUseBlocks = response.content.filter(
           (b) => b.type === "tool_use",
         ) as Array<{
@@ -137,13 +149,11 @@ export async function runAgent(
         ) as Array<{ type: "text"; text: string }>;
 
         if (toolUseBlocks.length === 0) {
-          // Resposta final
           output = textBlocks.map((t) => t.text).join("\n");
           success = true;
           break;
         }
 
-        // Executa cada tool call
         messages.push({ role: "assistant", content: response.content });
         const toolResults: unknown[] = [];
         for (const block of toolUseBlocks) {
@@ -198,6 +208,16 @@ export async function runAgent(
         tokensOut,
       );
 
+  // Track budget
+  trackSpend(agent.crew, costBrl);
+
+  // Update circuit breaker
+  if (success) {
+    failureCount.set(agentId, 0);
+  } else {
+    failureCount.set(agentId, (failureCount.get(agentId) ?? 0) + 1);
+  }
+
   const result: AgentResult = {
     agentId: agent.id,
     eventName: event.name,
@@ -210,7 +230,7 @@ export async function runAgent(
     error: errorMsg,
   };
 
-  // Avalia escalation rules
+  // Escalation rules
   if (success && agent.escalationRules) {
     for (const rule of agent.escalationRules) {
       const level = rule.when(result, event);
@@ -221,10 +241,12 @@ export async function runAgent(
     }
   }
 
+  // Log no banco (async, não bloqueia)
+  logAgentExecution(agent, result).catch(() => {});
+
   return result;
 }
 
-/** Dispara todos os agentes que escutam esse evento, em paralelo */
 export async function dispatch(event: AgentEvent): Promise<AgentResult[]> {
   const agents = registry.forEvent(event.name);
   if (agents.length === 0) {
@@ -234,17 +256,17 @@ export async function dispatch(event: AgentEvent): Promise<AgentResult[]> {
   return Promise.all(agents.map((a) => runAgent(a.id, event)));
 }
 
-// ─────────────────────────────────────────────
-// Mock runner (sem Claude)
-// ─────────────────────────────────────────────
+export function resetCircuitBreaker(agentId: string) {
+  failureCount.set(agentId, 0);
+}
 
+// Mock runner
 async function runMocked(
   agent: AgentDefinition,
   event: AgentEvent,
   toolCalls: ToolCallLog[],
   ctx: ToolContext,
 ): Promise<string> {
-  // Simula o agente chamando cada ferramenta uma vez com inputs fake
   for (const tool of agent.tools) {
     const handler = TOOL_HANDLERS[tool];
     const mockInput = fakeInputFor(tool, event);
@@ -260,49 +282,22 @@ async function runMocked(
 
 function fakeInputFor(tool: string, event: AgentEvent): Record<string, unknown> {
   switch (tool) {
-    case "read_db":
-      return { query: "count_users" };
-    case "write_db":
-      return { action: "mark_tenant_at_risk", tenantId: "mock-tenant" };
-    case "send_email":
-      return {
-        to: "lead@example.com",
-        subject: `Mock: ${event.name}`,
-        body: "Corpo do email mockado",
-      };
-    case "send_whatsapp":
-      return { to: "+5511999999999", message: `Mock WA: ${event.name}` };
-    case "web_search":
-      return { query: `tribo ai ${event.name}` };
-    case "web_fetch":
-      return { url: "https://example.com" };
-    case "enrich_cnpj":
-      return { cnpj: "12345678000100" };
-    case "write_markdown":
-      return {
-        filename: `mock-${Date.now()}.md`,
-        content: "# Mock post\n\nConteúdo mockado.",
-      };
-    case "escalate_to_founder":
-      return {
-        title: `Mock escalation de ${event.name}`,
-        summary: "Este é um evento mockado",
-        priority: "P3",
-      };
-    case "create_ticket":
-      return { title: "Mock ticket", priority: "P2" };
-    case "import_csv":
-      return { format: "tangerino" };
-    default:
-      return {};
+    case "read_db": return { query: "count_users" };
+    case "write_db": return { action: "mark_tenant_at_risk", tenantId: "mock-tenant" };
+    case "send_email": return { to: "lead@example.com", subject: `Mock: ${event.name}`, body: "Corpo mockado" };
+    case "send_whatsapp": return { to: "+5511999999999", message: `Mock WA: ${event.name}` };
+    case "web_search": return { query: `tribo ai ${event.name}` };
+    case "web_fetch": return { url: "https://example.com" };
+    case "enrich_cnpj": return { cnpj: "12345678000100" };
+    case "write_markdown": return { filename: `mock-${Date.now()}.md`, content: "# Mock\n\nConteúdo mockado." };
+    case "escalate_to_founder": return { title: `Mock ${event.name}`, summary: "Evento mockado", priority: "P3" };
+    case "create_ticket": return { title: "Mock ticket", priority: "P2" };
+    case "import_csv": return { format: "tangerino" };
+    default: return {};
   }
 }
 
-function errorResult(
-  agentId: string,
-  event: AgentEvent,
-  error: string,
-): AgentResult {
+function errorResult(agentId: string, event: AgentEvent, error: string): AgentResult {
   return {
     agentId,
     eventName: event.name,

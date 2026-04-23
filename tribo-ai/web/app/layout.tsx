@@ -46,6 +46,14 @@ export default async function RootLayout({
                   Admin
                 </a>
               )}
+              {session?.user.isOwner && (
+                <a
+                  href="/admin/ceo"
+                  className="text-purple-600 hover:text-purple-800 font-medium"
+                >
+                  CEO
+                </a>
+              )}
               <span className="text-gray-300">|</span>
               {session ? (
                 <a
